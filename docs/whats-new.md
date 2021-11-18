@@ -29,6 +29,10 @@ See [roadmap](./roadmap) for more details.
 
 Target Release Date: Nov 2021.
 
+**@loaders.gl/arrow** 
+
+- Now uses `apache-arrow` v6
+
 **@loaders.gl/textures** 
 
 - Parse KTX2 with BasisLoader.
