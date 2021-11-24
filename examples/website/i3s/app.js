@@ -31,7 +31,7 @@ const INITIAL_VIEW_STATE = {
   latitude: 34,
   height: 600,
   width: 800,
-  pitch: 45,
+  pitch: 0,
   maxPitch: 60,
   bearing: 0,
   minZoom: 2,
@@ -196,7 +196,7 @@ export default class App extends PureComponent {
     if (this.needTransitionToTileset) {
       const viewState = {
         ...this.state.viewState,
-        zoom: zoom + 2.5,
+        zoom: zoom - 4,
         longitude,
         latitude
       };
@@ -252,7 +252,7 @@ export default class App extends PureComponent {
 
   _renderLayers() {
     const {flattenedSublayers, token, selectedFeatureIndex, selectedTilesetBasePath, metadata, useTerrainLayer} = this.state;
-    const loadOptions = {i3s: {coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS}};
+    const loadOptions = {i3s: {}};
     if (token) {
       loadOptions.i3s = {...loadOptions.i3s, token};
     }
