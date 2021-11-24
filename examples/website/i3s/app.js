@@ -132,6 +132,7 @@ export default class App extends PureComponent {
     // https://github.com/tilezen/joerd/blob/master/docs/use-service.md#additional-amazon-s3-endpoints
     const MAPZEN_TERRAIN_IMAGE = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`
     const ARCGIS_STREET_MAP_SURFACE_IMAGE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+    const MAX_ZOOM = 15;
 
     // https://github.com/tilezen/joerd/blob/master/docs/formats.md#terrarium
     const MAPZEN_ELEVATION_DECODER = {
@@ -144,8 +145,9 @@ export default class App extends PureComponent {
     return {
       elevationData: MAPZEN_TERRAIN_IMAGE,
       texture: ARCGIS_STREET_MAP_SURFACE_IMAGE,
-      elevationDecoder: MAPZEN_ELEVATION_DECODER
-    }
+      elevationDecoder: MAPZEN_ELEVATION_DECODER,
+      maxZoom: MAX_ZOOM
+    };
   }
 
   /**
@@ -228,10 +230,11 @@ export default class App extends PureComponent {
   }
 
   _renderTerrainLayer() {
-    const {elevationDecoder, texture, elevationData} = this.getTerrainLayerData();
+    const {elevationDecoder, texture, elevationData, maxZoom} = this.getTerrainLayerData();
 
     return new TerrainLayer({
       id: 'terrain',
+      maxZoom,
       elevationDecoder,
       elevationData,
       texture,
@@ -252,7 +255,7 @@ export default class App extends PureComponent {
   }
 
   _renderLayers() {
-    const {flattenedSublayers, token, selectedFeatureIndex, selectedTilesetBasePath, metadata, useTerrainLayer} = this.state;
+    const {flattenedSublayers, token, selectedFeatureIndex, selectedTilesetBasePath, useTerrainLayer} = this.state;
     const loadOptions = {i3s: {}};
     if (token) {
       loadOptions.i3s = {...loadOptions.i3s, token};
