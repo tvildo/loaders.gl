@@ -22,7 +22,7 @@ import {load} from '@loaders.gl/core';
 import {buildSublayersTree} from './helpers/sublayers';
 import {initStats, sumTilesetsStats} from './helpers/stats';
 
-import {default as Tile3DLayer} from './deckgl/tile-3d-layer-tmp';
+import {Tile3DLayer} from '@deck.gl/geo-layers';
 
 const TRANSITION_DURAITON = 4000;
 
@@ -36,7 +36,8 @@ const INITIAL_VIEW_STATE = {
   bearing: 0,
   minZoom: 2,
   maxZoom: 30,
-  zoom: 14.5
+  zoom: 14.5,
+  position: [0, 0, 400]
 };
 
 const StatsWidgetWrapper = styled.div`
@@ -196,7 +197,7 @@ export default class App extends PureComponent {
     if (this.needTransitionToTileset) {
       const viewState = {
         ...this.state.viewState,
-        zoom: zoom + 2.5,
+        zoom: zoom - 4,
         longitude,
         latitude
       };
@@ -252,7 +253,7 @@ export default class App extends PureComponent {
 
   _renderLayers() {
     const {flattenedSublayers, token, selectedFeatureIndex, selectedTilesetBasePath, metadata, useTerrainLayer} = this.state;
-    const loadOptions = {i3s: {coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS}};
+    const loadOptions = {i3s: {}};
     if (token) {
       loadOptions.i3s = {...loadOptions.i3s, token};
     }
