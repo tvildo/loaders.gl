@@ -9,6 +9,11 @@ const CONFIG = {
     library: 'App'
   },
 
+  devServer: {
+    compress: true,
+    disableHostCheck: true,   // That solved it
+  },
+
   module: {
     rules: [
       {
