@@ -6,6 +6,7 @@ import {encode, assert} from '@loaders.gl/core';
 import {concatenateArrayBuffers, concatenateTypedArrays} from '@loaders.gl/loader-utils';
 import md5 from 'md5';
 import {generateAttributes} from './geometry-attributes';
+import {createBoundingVolumesFromGeometry} from './coordinate-converter';
 
 const VALUES_PER_VERTEX = 3;
 const VALUES_PER_TEX_COORD = 2;
@@ -22,15 +23,24 @@ const OBJECT_ID_TYPE = 'Oid32';
  */
 const BATCHED_ID_POSSIBLE_ATTRIBUTE_NAMES = ['CUSTOM_ATTRIBUTE_2', '_BATCHID', 'BATCHID'];
 
+let scratchVector = new Vector3();
+
 export default async function convertB3dmToI3sGeometry(
   tileContent,
   nodeId,
   featuresHashArray,
   attributeStorageInfo,
-  draco
+  draco,
+  generateBoundingVolumes,
+  geoidHeightModel
 ) {
+  const useCartesianPositions = generateBoundingVolumes;
   const materialAndTextureList = convertMaterials(tileContent);
-  const convertedAttributesMap = convertAttributes(tileContent);
+  const convertedAttributesMap = convertAttributes(tileContent, useCartesianPositions);
+
+  if (generateBoundingVolumes) {
+    _generateBoundingVolumesFromGeometry(convertedAttributesMap, geoidHeightModel);
+  }
 
   if (convertedAttributesMap.has('default')) {
     materialAndTextureList.push({
@@ -72,6 +82,32 @@ export default async function convertB3dmToI3sGeometry(
   return result;
 }
 
+/**
+ * Create bounding volumes based on positions
+ * @param convertedAttributesMap
+ * @param geoidHeightModel
+ */
+function _generateBoundingVolumesFromGeometry(convertedAttributesMap, geoidHeightModel) {
+  for (const attributes of convertedAttributesMap.values()) {
+    const boundingVolumes = createBoundingVolumesFromGeometry(
+      attributes.positions,
+      geoidHeightModel
+    );
+
+    attributes.boundingVolumes = boundingVolumes;
+    const cartographicOrigin = boundingVolumes.obb.center;
+
+    for (let index = 0; index < attributes.positions.length; index += VALUES_PER_VERTEX) {
+      const vertex = attributes.positions.subarray(index, index + VALUES_PER_VERTEX);
+      Ellipsoid.WGS84.cartesianToCartographic(Array.from(vertex), scratchVector);
+      scratchVector[2] =
+        scratchVector[2] - geoidHeightModel.getHeight(scratchVector[1], scratchVector[0]);
+      scratchVector = scratchVector.subtract(cartographicOrigin);
+      attributes.positions.set(scratchVector, index);
+    }
+  }
+}
+
 async function _makeNodeResources({
   convertedAttributes,
   material,
@@ -82,6 +118,7 @@ async function _makeNodeResources({
   attributeStorageInfo,
   draco
 }) {
+  const boundingVolumes = convertedAttributes.boundingVolumes;
   const vertexCount = convertedAttributes.positions.length / VALUES_PER_VERTEX;
   const triangleCount = vertexCount / 3;
   const {faceRange, featureIds, positions, normals, colors, texCoords, featureCount} =
@@ -136,7 +173,8 @@ async function _makeNodeResources({
     meshMaterial: material,
     vertexCount,
     attributes,
-    featureCount
+    featureCount,
+    boundingVolumes
   };
 }
 
@@ -152,7 +190,7 @@ async function _makeNodeResources({
  * }>
  * @todo implement colors support (if applicable for gltf format)
  */
-function convertAttributes(tileContent) {
+function convertAttributes(tileContent, useCartesianPositions) {
   const attributesMap = new Map();
 
   for (const material of tileContent.gltf.materials || [{id: 'default'}]) {
@@ -161,12 +199,13 @@ function convertAttributes(tileContent) {
       normals: new Float32Array(0),
       texCoords: new Float32Array(0),
       colors: new Uint8Array(0),
-      featureIndices: []
+      featureIndices: [],
+      boundingVolumes: null
     });
   }
 
   const nodes = (tileContent.gltf.scene || tileContent.gltf.scenes?.[0] || tileContent.gltf).nodes;
-  convertNodes(nodes, tileContent, attributesMap);
+  convertNodes(nodes, tileContent, attributesMap, useCartesianPositions);
 
   for (const attrKey of attributesMap.keys()) {
     const attributes = attributesMap.get(attrKey);
@@ -194,11 +233,12 @@ function convertNodes(
   nodes,
   tileContent,
   attributesMap,
+  useCartesianPositions,
   matrix = new Matrix4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
 ) {
   if (nodes) {
     for (const node of nodes) {
-      convertNode(node, tileContent, attributesMap, matrix);
+      convertNode(node, tileContent, attributesMap, useCartesianPositions, matrix);
     }
   }
 }
@@ -216,6 +256,7 @@ function convertNode(
   node,
   tileContent,
   attributesMap,
+  useCartesianPositions,
   matrix = new Matrix4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
 ) {
   const nodeMatrix = node.matrix;
@@ -223,10 +264,10 @@ function convertNode(
 
   const mesh = node.mesh;
   if (mesh) {
-    convertMesh(mesh, tileContent, attributesMap, compositeMatrix);
+    convertMesh(mesh, tileContent, attributesMap, useCartesianPositions, compositeMatrix);
   }
 
-  convertNodes(node.children, tileContent, attributesMap, compositeMatrix);
+  convertNodes(node.children, tileContent, attributesMap, useCartesianPositions, compositeMatrix);
 }
 
 /**
@@ -242,6 +283,7 @@ function convertMesh(
   mesh,
   content,
   attributesMap,
+  useCartesianPositions = false,
   matrix = new Matrix4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
 ) {
   for (const primitive of mesh.primitives) {
@@ -262,7 +304,8 @@ function convertMesh(
         cartesianModelMatrix: content.cartesianModelMatrix,
         nodeMatrix: matrix,
         indices: primitive.indices.value,
-        attributeSpecificTransformation: transformVertexPositions
+        attributeSpecificTransformation: transformVertexPositions,
+        useCartesianPositions
       })
     );
     outputAttributes.normals = concatenateTypedArrays(
@@ -273,7 +316,8 @@ function convertMesh(
         cartesianModelMatrix: content.cartesianModelMatrix,
         nodeMatrix: matrix,
         indices: primitive.indices.value,
-        attributeSpecificTransformation: transformVertexNormals
+        attributeSpecificTransformation: transformVertexNormals,
+        useCartesianPositions: false
       })
     );
     outputAttributes.texCoords = concatenateTypedArrays(
@@ -304,6 +348,7 @@ function convertMesh(
  * @param {Matrix4} args.nodeMatrix - a gltf node transformation matrix - cumulative transformation matrix formed from all parent node matrices
  * @param {Uint8Array} args.indices - gltf primitive indices
  * @param {Function} args.attributeSpecificTransformation - function to do attribute - specific transformations
+ * @param {Boolean} args.useCartesianPositions - use coordinates as it is.
  * @returns {Float32Array}
  */
 function transformVertexArray(args) {
@@ -327,13 +372,18 @@ function transformVertexArray(args) {
 }
 
 function transformVertexPositions(vertexVector, calleeArgs) {
-  const {cartesianModelMatrix, cartographicOrigin, nodeMatrix} = calleeArgs;
+  const {cartesianModelMatrix, cartographicOrigin, nodeMatrix, useCartesianPositions} = calleeArgs;
 
   if (nodeMatrix) {
     vertexVector = vertexVector.transform(nodeMatrix);
   }
 
   vertexVector = vertexVector.transform(cartesianModelMatrix);
+
+  if (useCartesianPositions) {
+    return vertexVector;
+  }
+
   Ellipsoid.WGS84.cartesianToCartographic(
     [vertexVector[0], vertexVector[1], vertexVector[2]],
     vertexVector

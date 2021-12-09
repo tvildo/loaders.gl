@@ -7,7 +7,6 @@ import type {
   BoundingVolumes,
   Node3DIndexDocument,
   NodeReference,
-  I3SGeometry,
   MaxScreenThresholdSQ,
   NodeInPage,
   LodSelection,
@@ -21,6 +20,7 @@ import type {
 import {load, encode} from '@loaders.gl/core';
 import {Tileset3D} from '@loaders.gl/tiles';
 import {CesiumIonLoader, Tiles3DLoader} from '@loaders.gl/3d-tiles';
+import {Geoid} from '@math.gl/geoid';
 import {join} from 'path';
 import {v4 as uuidv4} from 'uuid';
 import process from 'process';
@@ -46,15 +46,15 @@ import {PGMLoader} from '../pgm-loader';
 
 import {LAYERS as layersTemplate} from './json-templates/layers';
 import {NODE as nodeTemplate} from './json-templates/node';
-import {SHARED_RESOURCES_TEMPLATE} from './json-templates/shared-resources';
+import {SHARED_RESOURCES as sharedResourcesTemplate} from './json-templates/shared-resources';
 import {validateNodeBoundingVolumes} from './helpers/node-debug';
-import {GeoidHeightModel} from '../lib/geoid-height-model';
 import TileHeader from '@loaders.gl/tiles/src/tileset/tile-3d';
 import {KTX2BasisUniversalTextureWriter} from '@loaders.gl/textures';
 import {LoaderWithParser} from '@loaders.gl/loader-utils';
-import {I3SMaterialDefinition} from '@loaders.gl/i3s/src/types';
+import {I3SMaterialDefinition, TextureSetDefinitionFormats} from '@loaders.gl/i3s/src/types';
 import {ImageWriter} from '@loaders.gl/images';
 import {GLTFImagePostprocessed} from '@loaders.gl/gltf';
+import {I3SConvertedResources} from './types';
 
 const ION_DEFAULT_TOKEN =
   process.env.IonToken || // eslint-disable-line
@@ -92,8 +92,10 @@ export default class I3SConverter {
   conversionStartTime: [number, number] = [0, 0];
   refreshTokenTime: [number, number] = [0, 0];
   sourceTileset: Tileset3D | null = null;
-  geoidHeightModel: GeoidHeightModel | null = null;
+  geoidHeightModel: Geoid | null = null;
   Loader: LoaderWithParser = Tiles3DLoader;
+  generateTextures: boolean;
+  generateBoundingVolumes: boolean;
 
   constructor() {
     this.nodePages = new NodePages(writeFile, HARDCODED_NODES_PER_PAGE);
@@ -110,6 +112,8 @@ export default class I3SConverter {
       tilesWithAddRefineCount: 0
     };
     this.validate = false;
+    this.generateTextures = false;
+    this.generateBoundingVolumes = false;
   }
 
   /**
@@ -137,6 +141,10 @@ export default class I3SConverter {
     token?: string;
     draco?: boolean;
     validate?: boolean;
+    generateTextures?: boolean;
+    generateBoundingVolumes?: boolean;
+    /** @deprecated */
+    inputType?: string;
   }): Promise<any> {
     this.conversionStartTime = process.hrtime();
     const {
@@ -149,11 +157,15 @@ export default class I3SConverter {
       draco,
       sevenZipExe,
       maxDepth,
-      token
+      token,
+      generateTextures,
+      generateBoundingVolumes
     } = options;
     this.options = {maxDepth, slpk, sevenZipExe, egmFilePath, draco, token, inputUrl};
     this.validate = Boolean(validate);
     this.Loader = inputUrl.indexOf(CESIUM_DATASET_PREFIX) !== -1 ? CesiumIonLoader : Tiles3DLoader;
+    this.generateTextures = Boolean(generateTextures);
+    this.generateBoundingVolumes = Boolean(generateBoundingVolumes);
 
     console.log('Loading egm file...'); // eslint-disable-line
     this.geoidHeightModel = await load(egmFilePath, PGMLoader);
@@ -242,7 +254,7 @@ export default class I3SConverter {
       compressGeometry: this.options.draco
     };
 
-    this.layers0 = transform(layers0data, layersTemplate);
+    this.layers0 = transform(layers0data, layersTemplate());
   }
 
   /**
@@ -268,7 +280,7 @@ export default class I3SConverter {
       ...boundingVolumes,
       children: []
     };
-    return transform(root0data, nodeTemplate);
+    return transform(root0data, nodeTemplate());
   }
 
   /**
@@ -362,6 +374,7 @@ export default class I3SConverter {
         slpkFileName,
         0,
         '.',
+        // @ts-expect-error
         this.options.sevenZipExe
       );
 
@@ -442,14 +455,14 @@ export default class I3SConverter {
         });
         await sourceTile.unloadContent();
       } else {
-        const boundingVolumes = createBoundingVolumes(sourceTile, this.geoidHeightModel!);
         const children = await this._createNode(parentNode, sourceTile, parentId, level);
         parentNode.children = parentNode.children || [];
         for (const child of children) {
           parentNode.children.push({
             id: child.id,
             href: `../${child.path}`,
-            ...boundingVolumes
+            obb: child.obb,
+            mbs: child.mbs
           });
           childNodes.push(child);
         }
@@ -517,12 +530,8 @@ export default class I3SConverter {
 
     await this._updateTilesetOptions();
     await this.sourceTileset!._loadTile(sourceTile);
-    const boundingVolumes = createBoundingVolumes(sourceTile, this.geoidHeightModel!);
 
-    const lodSelection = convertGeometricErrorToScreenThreshold(sourceTile, boundingVolumes);
-    const maxScreenThresholdSQ = lodSelection.find(
-      (val) => val.metricType === 'maxScreenThresholdSQ'
-    ) || {maxError: 0};
+    let boundingVolumes = createBoundingVolumes(sourceTile, this.geoidHeightModel!);
 
     const batchTable = sourceTile?.content?.batchTableJson;
 
@@ -542,9 +551,20 @@ export default class I3SConverter {
       meshMaterial: null,
       vertexCount: null,
       attributes: null,
-      featureCount: null
+      featureCount: null,
+      boundingVolumes: null
     };
+
     for (const resources of resourcesData || [emptyResources]) {
+      if (this.generateBoundingVolumes && resources.boundingVolumes) {
+        boundingVolumes = resources.boundingVolumes;
+      }
+
+      const lodSelection = convertGeometricErrorToScreenThreshold(sourceTile, boundingVolumes);
+      const maxScreenThresholdSQ = lodSelection.find(
+        (val) => val.metricType === 'maxScreenThresholdSQ'
+      ) || {maxError: 0};
+
       const nodeInPage = this._createNodeInNodePages(
         maxScreenThresholdSQ,
         boundingVolumes,
@@ -613,7 +633,7 @@ export default class I3SConverter {
    * result.attributes - feature attributes
    * result.featureCount - number of features
    */
-  private async _convertResources(sourceTile: TileHeader): Promise<I3SGeometry[] | null> {
+  private async _convertResources(sourceTile: TileHeader): Promise<I3SConvertedResources[] | null> {
     if (!this.isContentSupported(sourceTile)) {
       return null;
     }
@@ -622,7 +642,9 @@ export default class I3SConverter {
       Number(this.nodePages.nodesCounter),
       this.featuresHashArray,
       this.layers0?.attributeStorageInfo,
-      this.options.draco
+      this.options.draco,
+      this.generateBoundingVolumes,
+      this.geoidHeightModel!
     );
     return resourcesData;
   }
@@ -646,7 +668,7 @@ export default class I3SConverter {
     boundingVolumes: BoundingVolumes,
     sourceTile: TileHeader,
     parentId: number,
-    resources: I3SGeometry
+    resources: I3SConvertedResources
   ): NodeInPage {
     const {meshMaterial, texture, vertexCount, featureCount, geometry} = resources;
     const nodeInPage: NodeInPage = {
@@ -708,7 +730,7 @@ export default class I3SConverter {
     boundingVolumes: BoundingVolumes,
     lodSelection: LodSelection[],
     nodeInPage: NodeInPage,
-    resources: I3SGeometry
+    resources: I3SConvertedResources
   ): Node3DIndexDocument {
     const {texture, attributes} = resources;
     const nodeId = nodeInPage.index!;
@@ -728,7 +750,7 @@ export default class I3SConverter {
       children: [],
       neighbors: []
     };
-    const node = transform(nodeData, nodeTemplate);
+    const node = transform(nodeData, nodeTemplate());
 
     if (nodeInPage.mesh) {
       node.geometryData = [{href: './geometries/0'}];
@@ -760,7 +782,7 @@ export default class I3SConverter {
    * @param resources.attributes - feature attributes
    * @return {Promise<void>}
    */
-  private async _writeResources(resources: I3SGeometry, nodePath: string): Promise<void> {
+  private async _writeResources(resources: I3SConvertedResources, nodePath: string): Promise<void> {
     const {
       geometry: geometryBuffer,
       compressedGeometry,
@@ -831,7 +853,7 @@ export default class I3SConverter {
     nodePath: string
   ): Promise<void> {
     sharedResources.nodePath = nodePath;
-    const sharedData = transform(sharedResources, SHARED_RESOURCES_TEMPLATE);
+    const sharedData = transform(sharedResources, sharedResourcesTemplate());
     const sharedDataStr = JSON.stringify(sharedData);
     if (this.options.slpk) {
       const slpkSharedPath = join(childPath, 'shared');
@@ -847,7 +869,7 @@ export default class I3SConverter {
   }
 
   /**
-   * Write the texture image in a file
+   * Generates textures based on texture mime type and fill in textureSetDefinitions data.
    * @param texture - the texture image
    * @param childPath - a child path to write resources
    * @param slpkChildPath - the resource path inside *slpk file
@@ -859,58 +881,80 @@ export default class I3SConverter {
   ): Promise<void> {
     if (texture) {
       const format = this._getFormatByMimeType(texture?.mimeType);
+      const formats: TextureSetDefinitionFormats = [];
+      const textureData = texture.bufferView!.data;
+
+      switch (format) {
+        case 'jpg':
+        case 'png': {
+          formats.push({name: '0', format});
+          await this.writeTextureFile(textureData, '0', format, childPath, slpkChildPath);
+
+          if (this.generateTextures) {
+            formats.push({name: '1', format: 'ktx2'});
+            const ktx2TextureData = new Uint8Array(
+              await encode(texture.image, KTX2BasisUniversalTextureWriter)
+            );
+            await this.writeTextureFile(ktx2TextureData, '1', 'ktx2', childPath, slpkChildPath);
+          }
+
+          break;
+        }
+
+        case 'ktx2': {
+          formats.push({name: '1', format});
+          await this.writeTextureFile(textureData, '1', format, childPath, slpkChildPath);
+
+          if (this.generateTextures) {
+            formats.push({name: '0', format: 'jpg'});
+            const decodedFromKTX2TextureData = new Uint8Array(
+              await encode(texture.image!.data[0], ImageWriter)
+            );
+            await this.writeTextureFile(
+              decodedFromKTX2TextureData,
+              '0',
+              'jpg',
+              childPath,
+              slpkChildPath
+            );
+          }
+        }
+      }
+
       if (!this.layers0!.textureSetDefinitions!.length) {
-        this.layers0!.textureSetDefinitions!.push({
-          formats: [
-            {
-              name: '0',
-              format
-            },
-            {
-              name: '1',
-              format: 'ktx2'
-            }
-          ]
-        });
+        this.layers0!.textureSetDefinitions!.push({formats});
       }
+    }
+  }
 
-      let textureData;
-      let ktx2TextureData;
+  /**
+   * Write the texture image in a file
+   * @param textureData
+   * @param name
+   * @param format
+   * @param childPath
+   * @param slpkChildPath
+   */
+  private async writeTextureFile(
+    textureData: ArrayBuffer,
+    name: string,
+    format: 'jpg' | 'png' | 'ktx2',
+    childPath: string,
+    slpkChildPath: string
+  ): Promise<void> {
+    const texturePath = join(childPath, `textures/${name}/`);
+    await writeFile(texturePath, textureData, `index.${format}`);
 
-      if (texture.mimeType === 'image/ktx2') {
-        ktx2TextureData = texture.bufferView!.data;
-        textureData = new Uint8Array(await encode(texture.image!.data[0], ImageWriter));
-      } else {
-        textureData = texture.bufferView!.data;
-        ktx2TextureData = new Uint8Array(
-          await encode(texture.image, KTX2BasisUniversalTextureWriter)
-        );
-      }
+    if (this.options.slpk) {
+      const slpkTexturePath = join(childPath, 'textures');
+      const compress = false;
 
-      if (this.options.slpk) {
-        const slpkTexturePath = join(childPath, 'textures');
-        const compress = false;
-
-        this.fileMap[`${slpkChildPath}/textures/0.${format}`] = await writeFileForSlpk(
-          slpkTexturePath,
-          textureData,
-          `0.${format}`,
-          compress
-        );
-
-        this.fileMap[`${slpkChildPath}/textures/1.ktx2`] = await writeFileForSlpk(
-          slpkTexturePath,
-          ktx2TextureData,
-          `1.ktx2`,
-          compress
-        );
-      } else {
-        const texturePath = join(childPath, 'textures/0/');
-        await writeFile(texturePath, textureData, `index.${format}`);
-
-        const ktx2TexturePath = join(childPath, 'textures/1/');
-        await writeFile(ktx2TexturePath, ktx2TextureData, `index.ktx2`);
-      }
+      this.fileMap[`${slpkChildPath}/textures/${name}.${format}`] = await writeFileForSlpk(
+        slpkTexturePath,
+        textureData,
+        `${name}.${format}`,
+        compress
+      );
     }
   }
 
@@ -949,12 +993,14 @@ export default class I3SConverter {
    * Return file format by its MIME type
    * @param mimeType - feature attributes
    */
-  private _getFormatByMimeType(mimeType: string | undefined): 'jpg' | 'png' {
+  private _getFormatByMimeType(mimeType: string | undefined): 'jpg' | 'png' | 'ktx2' {
     switch (mimeType) {
       case 'image/jpeg':
         return 'jpg';
       case 'image/png':
         return 'png';
+      case 'image/ktx2':
+        return 'ktx2';
       default:
         return 'jpg';
     }

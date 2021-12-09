@@ -367,18 +367,6 @@ export type Resource = {
   nodePath?: string;
 };
 
-export type I3SGeometry = {
-  geometry: ArrayBuffer | null;
-  compressedGeometry?: ArrayBuffer | null;
-  texture: any | null;
-  sharedResources: SharedResources | null;
-  meshMaterial?: I3SMaterialDefinition | null;
-  vertexCount: number | null;
-  attributes: any | null;
-  featureCount: number | null;
-  geometryBuffer?: ArrayBuffer;
-};
-
 export type MaxScreenThresholdSQ = {
   maxError: number;
 };
@@ -684,11 +672,14 @@ type HeightModelInfo = {
     | 'kilometer';
 };
 
+export type TextureSetDefinitionFormats = {name: string; format: I3STextureFormat}[];
+
 /** Spec - https://github.com/Esri/i3s-spec/blob/master/docs/1.8/textureSetDefinition.cmn.md */
 type TextureSetDefinition = {
-  formats: {name: string; format: I3STextureFormat}[];
+  formats: TextureSetDefinitionFormats;
   atlas?: boolean;
 };
+
 /** Spec - https://github.com/Esri/i3s-spec/blob/master/docs/1.8/geometryDefinition.cmn.md */
 type GeometryDefinition = {
   topology: 'triangle' | string;

@@ -1,7 +1,6 @@
-import {encode, encodeSync} from '@loaders.gl/core';
+import {encodeSync} from '@loaders.gl/core';
 import {GLTFScenegraph, GLTFWriter} from '@loaders.gl/gltf';
 import {Tile3DWriter} from '@loaders.gl/3d-tiles';
-import {ImageWriter} from '@loaders.gl/images';
 import {Matrix4, Vector3} from '@math.gl/core';
 import {Ellipsoid} from '@math.gl/geospatial';
 import {convertTextureAtlas} from './texture-atlas';
@@ -9,8 +8,20 @@ import {convertTextureAtlas} from './texture-atlas';
 const Z_UP_TO_Y_UP_MATRIX = new Matrix4([1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
 const scratchVector = new Vector3();
 
+/**
+ * Converts content of an I3S node to *.b3dm's file content
+ */
 export default class B3dmConverter {
-  async convert(i3sTile, attributes = null) {
+  // @ts-expect-error
+  rtcCenter: Float32Array;
+  i3sTile: any;
+
+  /**
+   * The starter of content conversion
+   * @param i3sTile - Tile3D instance for I3S node
+   * @returns - encoded content
+   */
+  async convert(i3sTile: Object, attributes: any = null): Promise<ArrayBuffer> {
     this.i3sTile = i3sTile;
     const gltf = await this.buildGltf(i3sTile);
     const b3dm = encodeSync(
@@ -25,7 +36,12 @@ export default class B3dmConverter {
     return b3dm;
   }
 
-  async buildGltf(i3sTile) {
+  /**
+   * Build and encode gltf
+   * @param i3sTile - Tile3D instance for I3S node
+   * @returns - encoded glb content
+   */
+  async buildGltf(i3sTile): Promise<ArrayBuffer> {
     const {
       material,
       attributes,
@@ -100,8 +116,7 @@ export default class B3dmConverter {
     }
     if (selectedTexture) {
       const mimeType = this._deduceMimeTypeFromFormat(textureFormat);
-      const imageBuffer = await encode(selectedTexture, ImageWriter);
-      const imageIndex = gltfBuilder.addImage(imageBuffer, mimeType);
+      const imageIndex = gltfBuilder.addImage(selectedTexture, mimeType);
       textureIndex = gltfBuilder.addTexture({imageIndex});
       delete attributes.colors;
     }
@@ -194,6 +209,8 @@ export default class B3dmConverter {
         return 'image/jpeg';
       case 'png':
         return 'image/png';
+      case 'ktx2':
+        return 'image/ktx2';
       default:
         console.warn(`Unexpected texture format in I3S: ${format}`); // eslint-disable-line no-console, no-undef
         return 'image/jpeg';
