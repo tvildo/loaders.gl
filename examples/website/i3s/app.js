@@ -238,7 +238,7 @@ export default class App extends PureComponent {
 
   _renderLayers() {
     const {flattenedSublayers, token, selectedFeatureIndex, selectedTilesetBasePath, useTerrainLayer} = this.state;
-    const loadOptions = {i3s: {}};
+    const loadOptions = {i3s: {coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS}};
     if (token) {
       loadOptions.i3s = {...loadOptions.i3s, token};
     }
